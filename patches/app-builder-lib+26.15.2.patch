@@ -1,0 +1,32 @@
+diff --git a/node_modules/app-builder-lib/out/util/electronGet.js b/node_modules/app-builder-lib/out/util/electronGet.js
+index c433dbb..843c22d 100644
+--- a/node_modules/app-builder-lib/out/util/electronGet.js
++++ b/node_modules/app-builder-lib/out/util/electronGet.js
+@@ -159,6 +159,27 @@ async function extractArchive(file, dir) {
+         else if (file.endsWith(".zip")) {
+             await extractZipStreaming(file, tmpDir);
+         }
++        else if (file.endsWith(".tar.7z")) {
++            // 7za only strips the outer 7z layer; the inner tar must be extracted separately
++            // (same two-stage handling as .tar.xz above). Used by the snap templates
++            // (snap-template-electron-*.tar.7z). Unlike .tar.xz toolsets, the template tar
++            // keeps its contents at the tar root, so no strip is applied.
++            const cmd7za = await (0, _7zip_1.getPath7za)();
++            const tar7zOutDir = `${tmpDir}.tar7z`;
++            await fs.rm(tar7zOutDir, { recursive: true, force: true });
++            await fs.mkdir(tar7zOutDir, { recursive: true });
++            try {
++                await (0, builder_util_1.exec)(cmd7za, ["x", "-bd", file, (0, builder_util_1.to7zaOutputSwitch)((0, builder_util_1.sanitizeDirPath)(tar7zOutDir)), "-y"]);
++                const innerTar = (await fs.readdir(tar7zOutDir)).find(f => f.endsWith(".tar"));
++                if (innerTar == null) {
++                    throw new Error(`7z decompression of ${path.basename(file)} produced no .tar archive`);
++                }
++                await tar.extract({ file: path.join(tar7zOutDir, innerTar), cwd: tmpDir });
++            }
++            finally {
++                await fs.rm(tar7zOutDir, { recursive: true, force: true });
++            }
++        }
+         else if (file.endsWith(".7z")) {
+             const cmd7za = await (0, _7zip_1.getPath7za)();
+             try {
