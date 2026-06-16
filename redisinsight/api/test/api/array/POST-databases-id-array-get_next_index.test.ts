@@ -30,13 +30,15 @@ const validInputData = {
   keyName: constants.getRandomString(),
 };
 
-// Service issues ARLEN (which returns max_index + 1 as a u64) and maps the
-// reply through toRequiredIndexString, so `index` is always a decimal string
-// — never null, never numeric.
+// Service issues ARNEXT (the ARINSERT cursor — a piece of array-level state
+// that ARINSERT advances and ARSEEK repositions, independent of which slots
+// ARSET/ARMSET have populated) and maps the reply through toIndexString, so
+// `index` is the cursor as a decimal string — or null when Redis reports
+// the cursor as exhausted (no further insertion possible).
 const responseSchema = Joi.object()
   .keys({
     keyName: JoiRedisString.required(),
-    index: Joi.string().pattern(/^\d+$/).required(),
+    index: Joi.string().pattern(/^\d+$/).allow(null).required(),
   })
   .required();
 
@@ -54,15 +56,19 @@ describe('POST /databases/:instanceId/array/get-next-index', () => {
   });
 
   describe('Main', () => {
-    it('Should return next index for a dense array starting at 0', async () => {
+    it('Should return cursor 0 for a key populated only via ARSET', async () => {
       const keyName = constants.getRandomString();
-      await rte.client.call('ARSET', keyName, '0', 'a', 'b', 'c');
+      // ARSET writes to specific indexes but does NOT advance the insertion
+      // cursor — that surface is reserved for ARINSERT. Pins the semantic
+      // boundary: this endpoint exposes the ARINSERT cursor, not the array
+      // length (use /array/get-length for that).
+      await rte.client.call('ARSET', keyName, '0', 'a', '1', 'b', '2', 'c');
 
       await validateApiCall({
         endpoint,
         data: { keyName },
         responseSchema,
-        responseBody: { keyName, index: '3' },
+        responseBody: { keyName, index: '0' },
         checkFn: ({ body }: any) => {
           // String contract — guards against any future numeric-coercion regression.
           expect(typeof body.index).to.eql('string');
@@ -70,18 +76,34 @@ describe('POST /databases/:instanceId/array/get-next-index', () => {
       });
     });
 
-    it('Should return next index after the highest populated slot for a sparse array', async () => {
+    it('Should advance the cursor by one per value inserted via ARINSERT', async () => {
       const keyName = constants.getRandomString();
-      await rte.client.call('ARMSET', keyName, '0', 'a', '1', 'b', '5', 'c');
+      // ARINSERT writes at the cursor position and advances the cursor by
+      // one per value, so after three values the cursor sits at 3 — exactly
+      // what ARNEXT must report.
+      await rte.client.call('ARINSERT', keyName, 'a', 'b', 'c');
 
-      // ARLEN returns max_index + 1, so the next safe write index for an
-      // array with the highest populated slot at 5 is 6 — locks in that the
-      // endpoint surfaces length semantics, not the populated-slot count.
       await validateApiCall({
         endpoint,
         data: { keyName },
         responseSchema,
-        responseBody: { keyName, index: '6' },
+        responseBody: { keyName, index: '3' },
+      });
+    });
+
+    it('Should reflect an explicit cursor reposition via ARSEEK', async () => {
+      const keyName = constants.getRandomString();
+      // ARINSERT to create the array and advance the cursor to 2; ARSEEK
+      // then jumps it to 100. ARNEXT must mirror the moved cursor — locks
+      // in that the response tracks state, not the inserted-value count.
+      await rte.client.call('ARINSERT', keyName, 'a', 'b');
+      await rte.client.call('ARSEEK', keyName, '100');
+
+      await validateApiCall({
+        endpoint,
+        data: { keyName },
+        responseSchema,
+        responseBody: { keyName, index: '100' },
       });
     });
 
@@ -135,18 +157,16 @@ describe('POST /databases/:instanceId/array/get-next-index', () => {
         },
       },
       {
-        name: 'Should throw error if no permissions for "arlen" command',
+        name: 'Should throw error if no permissions for "arnext" command',
         endpoint: aclEndpoint,
         data: { keyName: aclKey },
         statusCode: 403,
         responseBody: { statusCode: 403, error: 'Forbidden' },
         // beforeEach() wipes the key between tests; reseed via the root
-        // client (ACL rules below only affect the API request). The endpoint
-        // is /get-next-index but the service now issues ARLEN, so the denial
-        // must target -arlen (not -arnext).
+        // client (ACL rules below only affect the API request).
         before: async () => {
           await rte.client.call('ARSET', aclKey, '0', 'x');
-          await rte.data.setAclUserRules('~* +@all -arlen');
+          await rte.data.setAclUserRules('~* +@all -arnext');
         },
       },
     ].map(mainCheckFn);
