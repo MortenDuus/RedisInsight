@@ -29,12 +29,13 @@ const validInputData = {
   keyName: constants.getRandomString(),
 };
 
-// ARNEXT returns nil when the insertion cursor is exhausted (toIndexString
-// passes the nil through as JSON null), so index is string | null.
+// Service issues ARLEN (which returns max_index + 1 as a u64) and maps the
+// reply through toRequiredIndexString, so `index` is always a decimal string
+// — never null, never numeric.
 const responseSchema = Joi.object()
   .keys({
     keyName: JoiRedisString.required(),
-    index: Joi.string().pattern(/^\d+$/).allow(null).required(),
+    index: Joi.string().pattern(/^\d+$/).required(),
   })
   .required();
 
@@ -71,8 +72,9 @@ describe('POST /databases/:instanceId/array/get-next-index', () => {
       const keyName = constants.getRandomString();
       await rte.client.call('ARMSET', keyName, '0', 'a', '1', 'b', '5', 'c');
 
-      // Insertion cursor advances past the highest set index, not just the
-      // populated count — ARNEXT must follow ARLEN, not ARCOUNT.
+      // ARLEN returns max_index + 1, so the next safe write index for an
+      // array with the highest populated slot at 5 is 6 — locks in that the
+      // endpoint surfaces length semantics, not the populated-slot count.
       await validateApiCall({
         endpoint,
         data: { keyName },
@@ -131,16 +133,18 @@ describe('POST /databases/:instanceId/array/get-next-index', () => {
         },
       },
       {
-        name: 'Should throw error if no permissions for "arnext" command',
+        name: 'Should throw error if no permissions for "arlen" command',
         endpoint: aclEndpoint,
         data: { keyName: aclKey },
         statusCode: 403,
         responseBody: { statusCode: 403, error: 'Forbidden' },
         // beforeEach() wipes the key between tests; reseed via the root
-        // client (ACL rules below only affect the API request).
+        // client (ACL rules below only affect the API request). The endpoint
+        // is /get-next-index but the service now issues ARLEN, so the denial
+        // must target -arlen (not -arnext).
         before: async () => {
           await rte.client.call('ARSET', aclKey, '0', 'x');
-          await rte.data.setAclUserRules('~* +@all -arnext');
+          await rte.data.setAclUserRules('~* +@all -arlen');
         },
       },
     ].map(mainCheckFn);
