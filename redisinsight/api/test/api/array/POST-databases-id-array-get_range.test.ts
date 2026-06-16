@@ -221,7 +221,12 @@ describe('POST /databases/:instanceId/array/get-range', () => {
         data: { keyName: aclKey, start: '0', end: '0' },
         statusCode: 403,
         responseBody: { statusCode: 403, error: 'Forbidden' },
-        before: () => rte.data.setAclUserRules('~* +@all -argetrange'),
+        // beforeEach() wipes the key between tests; reseed via the root
+        // client (ACL rules below only affect the API request).
+        before: async () => {
+          await rte.client.call('ARSET', aclKey, '0', 'x');
+          await rte.data.setAclUserRules('~* +@all -argetrange');
+        },
       },
     ].map(mainCheckFn);
   });
