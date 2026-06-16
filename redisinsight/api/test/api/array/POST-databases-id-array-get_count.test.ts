@@ -5,6 +5,7 @@ import {
   deps,
   Joi,
   requirements,
+  tag,
   generateInvalidDataTestCases,
   validateInvalidDataTestCase,
   validateApiCall,
@@ -38,6 +39,7 @@ const responseSchema = Joi.object()
 const mainCheckFn = getMainCheckFn(endpoint);
 
 describe('POST /databases/:instanceId/array/get-count', () => {
+  tag('array');
   requirements('rte.version>=8.8');
   beforeEach(async () => rte.data.truncate());
 

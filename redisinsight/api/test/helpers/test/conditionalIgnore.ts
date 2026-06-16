@@ -30,6 +30,31 @@ export const requirements = function (...conditions) {
   });
 };
 
+/**
+ * Tag a suite. When the TEST_TAGS env var is set (e.g. TEST_TAGS=array on
+ * the oss-st-8 RTE), only suites whose declared tags intersect that list
+ * run; all others skip. When TEST_TAGS is unset, tags are a no-op — every
+ * suite runs as before.
+ *
+ * Mirrors requirements(); call inside a describe() block.
+ * note: add support for "it" if needed
+ *
+ * @param tags
+ */
+export const tag = function (...tags: string[]) {
+  const filter = process.env.TEST_TAGS?.split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (!filter?.length) return;
+
+  if (!tags.some((t) => filter.includes(t))) {
+    before(function () {
+      this.skip();
+    });
+  }
+};
+
 const cmdReg = /^([?!\w\.]+)(\s?[=<>]+)?(\s?[\w\.]+)?$/;
 const processConditionString = (condition: string): boolean => {
   if (!cmdReg.test(condition)) {

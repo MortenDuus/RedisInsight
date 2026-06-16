@@ -6,6 +6,7 @@ import {
   deps,
   Joi,
   requirements,
+  tag,
   generateInvalidDataTestCases,
   validateInvalidDataTestCase,
   validateApiCall,
@@ -42,6 +43,7 @@ const responseSchema = Joi.object()
 const mainCheckFn = getMainCheckFn(endpoint);
 
 describe('POST /databases/:instanceId/array/get-length', () => {
+  tag('array');
   // Array is a Redis 8.8 preview type; skip where the server lacks ARLEN.
   requirements('rte.version>=8.8');
   beforeEach(async () => rte.data.truncate());

@@ -6,6 +6,7 @@ import {
   deps,
   Joi,
   requirements,
+  tag,
   generateInvalidDataTestCases,
   validateInvalidDataTestCase,
   validateApiCall,
@@ -66,6 +67,7 @@ const seedSparse = (key: string) =>
   rte.client.call('ARMSET', key, '0', '20.1', '1', '20.4', '5', '21.4');
 
 describe('POST /databases/:instanceId/array/scan', () => {
+  tag('array');
   requirements('rte.version>=8.8');
   beforeEach(async () => rte.data.truncate());
 
