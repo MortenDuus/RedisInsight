@@ -226,6 +226,65 @@ describe('POST /databases/:instanceId/keys/get-info', () => {
         },
       ].map(mainCheckFn);
     });
+
+    describe('Array', () => {
+      // Redis 8.8 preview type — exercises the GetArrayKeyInfoResponse branch
+      // of the keys/get-info `oneOf` response and the ArrayKeyInfoStrategy.
+      requirements('rte.version>=8.8');
+
+      const denseKey = constants.getRandomString();
+      const sparseKey = constants.getRandomString();
+
+      before(async () => {
+        // The shared `rte` destructure is typed as null until initRTE runs;
+        // cast once for the seeding block to keep the file's TS-error baseline.
+        const client = (rte as any).client;
+        await client.call('ARSET', denseKey, '0', 'a', 'b', 'c');
+        // Sparse: indexes 0,5 populated → length=6, count=2. The divergence
+        // is the whole reason ArrayKeyInfoStrategy issues both ARLEN and
+        // ARCOUNT instead of one or the other.
+        await client.call('ARMSET', sparseKey, '0', 'v0', '5', 'v5');
+      });
+
+      const arrayResponseSchema = Joi.object()
+        .keys({
+          name: JoiRedisString.required(),
+          type: Joi.string().valid('array').required(),
+          ttl: Joi.number().integer().allow(null).optional(),
+          size: Joi.number().integer().allow(null).optional(),
+          // Decimal-string contract: ARLEN / ARCOUNT can exceed
+          // Number.MAX_SAFE_INTEGER for sparse arrays, so the response
+          // surfaces them as strings — never numbers.
+          length: Joi.string().pattern(/^\d+$/).required(),
+          count: Joi.string().pattern(/^\d+$/).required(),
+        })
+        .required();
+
+      [
+        {
+          name: 'Should return array info with length === count for a dense array',
+          data: { keyName: denseKey },
+          responseSchema: arrayResponseSchema,
+          responseBody: {
+            name: denseKey,
+            type: 'array',
+            length: '3',
+            count: '3',
+          },
+        },
+        {
+          name: 'Should return array info with length !== count for a sparse array',
+          data: { keyName: sparseKey },
+          responseSchema: arrayResponseSchema,
+          responseBody: {
+            name: sparseKey,
+            type: 'array',
+            length: '6',
+            count: '2',
+          },
+        },
+      ].map(mainCheckFn);
+    });
   });
 
   describe('ACL', () => {

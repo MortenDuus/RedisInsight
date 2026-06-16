@@ -1,0 +1,251 @@
+import {
+  expect,
+  describe,
+  it,
+  before,
+  deps,
+  Joi,
+  requirements,
+  generateInvalidDataTestCases,
+  validateInvalidDataTestCase,
+  validateApiCall,
+  getMainCheckFn,
+  JoiRedisString,
+} from '../deps';
+
+const { server, request, constants } = deps;
+const rte = deps.rte as any;
+
+const endpoint = (instanceId = constants.TEST_INSTANCE_ID) =>
+  request(server).post(`/${constants.API.DATABASES}/${instanceId}/array/scan`);
+
+const dataSchema = Joi.object({
+  keyName: Joi.string().allow('').required(),
+  start: Joi.string().required(),
+  end: Joi.string().required(),
+  // BE accepts an explicit null (treated as omitted), so model that here so
+  // generateInvalidDataTestCases doesn't synthesise a false-positive case.
+  limit: Joi.number().integer().min(1).allow(null).optional(),
+}).strict();
+
+const validInputData = {
+  keyName: constants.getRandomString(),
+  start: '0',
+  end: '5',
+};
+
+// Each pair: index is a decimal u64-as-string; value is a redis-string fill.
+const elementSchema = Joi.object().keys({
+  index: Joi.string().pattern(/^\d+$/).required(),
+  value: JoiRedisString.required(),
+});
+
+const responseSchema = Joi.object()
+  .keys({
+    keyName: JoiRedisString.required(),
+    elements: Joi.array().items(elementSchema).required(),
+  })
+  .required();
+
+const mainCheckFn = getMainCheckFn(endpoint);
+
+const seedSparse = (key: string) =>
+  rte.client.call('ARMSET', key, '0', '20.1', '1', '20.4', '5', '21.4');
+
+describe('POST /databases/:instanceId/array/scan', () => {
+  requirements('rte.version>=8.8');
+  beforeEach(async () => rte.data.truncate());
+
+  describe('Validation', () => {
+    generateInvalidDataTestCases(dataSchema, validInputData).map(
+      validateInvalidDataTestCase(endpoint, dataSchema),
+    );
+
+    [
+      {
+        name: 'Should reject a reversed range (start > end)',
+        data: { keyName: constants.getRandomString(), start: '5', end: '0' },
+        statusCode: 400,
+        responseBody: {
+          statusCode: 400,
+          message: 'Start index must be less than or equal to end index.',
+        },
+      },
+      {
+        name: 'Should reject a range exceeding 1,000,000 elements even without a limit',
+        // Without LIMIT, Redis still walks the index range — same cap applies.
+        data: {
+          keyName: constants.getRandomString(),
+          start: '0',
+          end: '1000000',
+        },
+        statusCode: 400,
+        checkFn: ({ body }: any) => {
+          expect(body.message).to.have.string('1 000 000');
+        },
+      },
+    ].map(mainCheckFn);
+  });
+
+  describe('Main', () => {
+    it('Should return only populated {index, value} pairs in ascending order', async () => {
+      const keyName = constants.getRandomString();
+      await seedSparse(keyName);
+
+      // Sparse fixture has indexes 0,1,5 populated; gaps must be skipped.
+      // Indexes arrive as decimal strings (u64 contract).
+      await validateApiCall({
+        endpoint,
+        data: { keyName, start: '0', end: '6' },
+        responseSchema,
+        responseBody: {
+          keyName,
+          elements: [
+            { index: '0', value: '20.1' },
+            { index: '1', value: '20.4' },
+            { index: '5', value: '21.4' },
+          ],
+        },
+      });
+    });
+
+    it('Should accept explicit limit:null as if it were omitted', async () => {
+      const keyName = constants.getRandomString();
+      await seedSparse(keyName);
+
+      // Regression guard for the DTO's @IsOptional() + service-level
+      // `typeof limit === 'number'` check: a JSON null in the body must
+      // NOT be forwarded as `LIMIT null` (would surface as 500).
+      await validateApiCall({
+        endpoint,
+        data: { keyName, start: '0', end: '6', limit: null },
+        responseSchema,
+        checkFn: ({ body }: any) => {
+          expect(body.elements).to.have.length(3);
+        },
+      });
+    });
+
+    it('Should cap the result set when limit is provided', async () => {
+      const keyName = constants.getRandomString();
+      await seedSparse(keyName);
+
+      await validateApiCall({
+        endpoint,
+        data: { keyName, start: '0', end: '6', limit: 2 },
+        responseSchema,
+        responseBody: {
+          keyName,
+          elements: [
+            { index: '0', value: '20.1' },
+            { index: '1', value: '20.4' },
+          ],
+        },
+      });
+    });
+
+    it('Should return an empty list when the range covers only empty slots', async () => {
+      const keyName = constants.getRandomString();
+      await seedSparse(keyName);
+
+      // Indexes 2..4 are all gaps in the seeded fixture.
+      await validateApiCall({
+        endpoint,
+        data: { keyName, start: '2', end: '4' },
+        responseSchema,
+        responseBody: { keyName, elements: [] },
+      });
+    });
+
+    it('Should serialize values as Buffer objects when encoding=buffer', async () => {
+      const keyName = constants.getRandomString();
+      await seedSparse(keyName);
+
+      await validateApiCall({
+        endpoint,
+        query: { encoding: 'buffer' },
+        data: { keyName, start: '0', end: '1' },
+        responseSchema,
+        checkFn: ({ body }: any) => {
+          expect(body.elements).to.have.length(2);
+          expect(body.elements[0].index).to.eql('0');
+          expect(body.elements[0].value).to.eql({
+            type: 'Buffer',
+            data: [...Buffer.from('20.1')],
+          });
+        },
+      });
+    });
+
+    [
+      {
+        name: 'Should return BadRequest if key holds a non-array type',
+        data: {
+          keyName: constants.TEST_STRING_KEY_1,
+          start: '0',
+          end: '5',
+        },
+        statusCode: 400,
+        before: () => rte.data.generateKeys(true),
+      },
+      {
+        name: 'Should return NotFound if key does not exist',
+        data: {
+          keyName: constants.getRandomString(),
+          start: '0',
+          end: '5',
+        },
+        statusCode: 404,
+        responseBody: {
+          statusCode: 404,
+          error: 'Not Found',
+          message: 'Key with this name does not exist.',
+        },
+      },
+      {
+        name: 'Should return NotFound if instance id does not exist',
+        endpoint: () => endpoint(constants.TEST_NOT_EXISTED_INSTANCE_ID),
+        data: {
+          keyName: constants.getRandomString(),
+          start: '0',
+          end: '5',
+        },
+        statusCode: 404,
+        responseBody: {
+          statusCode: 404,
+          error: 'Not Found',
+          message: 'Invalid database instance id.',
+        },
+      },
+    ].map(mainCheckFn);
+  });
+
+  describe('ACL', () => {
+    requirements('rte.acl');
+    before(async () => rte.data.setAclUserRules('~* +@all'));
+
+    const aclEndpoint = () => endpoint(constants.TEST_INSTANCE_ACL_ID);
+    const aclKey = constants.getRandomString();
+
+    [
+      {
+        name: 'Should return scan results for an authorised user',
+        endpoint: aclEndpoint,
+        data: { keyName: aclKey, start: '0', end: '0' },
+        responseSchema,
+        before: async () => {
+          await rte.data.setAclUserRules('~* +@all');
+          await rte.client.call('ARSET', aclKey, '0', 'x');
+        },
+      },
+      {
+        name: 'Should throw error if no permissions for "arscan" command',
+        endpoint: aclEndpoint,
+        data: { keyName: aclKey, start: '0', end: '0' },
+        statusCode: 403,
+        responseBody: { statusCode: 403, error: 'Forbidden' },
+        before: () => rte.data.setAclUserRules('~* +@all -arscan'),
+      },
+    ].map(mainCheckFn);
+  });
+});
