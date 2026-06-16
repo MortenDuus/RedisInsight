@@ -49,7 +49,7 @@ export const tag = function (...tags: string[]) {
   if (!filter?.length) return;
 
   if (!tags.some((t) => filter.includes(t))) {
-    before(function () {
+    before(function (this: Mocha.Context) {
       this.skip();
     });
   }
