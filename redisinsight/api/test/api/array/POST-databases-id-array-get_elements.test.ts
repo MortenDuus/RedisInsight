@@ -21,9 +21,21 @@ const endpoint = (instanceId = constants.TEST_INSTANCE_ID) =>
     `/${constants.API.DATABASES}/${instanceId}/array/get-elements`,
   );
 
+// Per-item indexes are validated by @IsArrayIndex({ each: true }), which emits
+// a single combined message ("<field> must be an integer string between 0
+// and <2^64-1>") for any non-canonical item — and drops the array index marker
+// (so an `indexes[0]` failure still surfaces as `indexes must be …`). Override
+// the per-rule Joi messages with a label-less substring of the API output so
+// the harness's substring-contains check passes.
+const ARRAY_INDEX_MSG = 'must be an integer string between';
+
 const dataSchema = Joi.object({
   keyName: Joi.string().allow('').required(),
-  indexes: Joi.array().items(Joi.string()).min(1).required(),
+  indexes: Joi.array()
+    .items(Joi.string().messages({ 'string.base': ARRAY_INDEX_MSG }))
+    .min(1)
+    .required()
+    .messages({ 'any.required': ARRAY_INDEX_MSG }),
 }).strict();
 
 const validInputData = {
