@@ -107,6 +107,44 @@ describe('POST /databases/:instanceId/array/get-next-index', () => {
       });
     });
 
+    it('Should return null when the cursor is exhausted', async () => {
+      const keyName = constants.getRandomString();
+      // Reach exhaustion: ARSEEK to the max valid index (2^64-2) then
+      // ARINSERT one element. The next slot would be 2^64-1, which Redis
+      // reserves as the no-index sentinel — ARNEXT reports the cursor as
+      // exhausted via a nil reply, which toIndexString must surface as
+      // JSON null (NOT the literal string "null").
+      await rte.client.call('ARSEEK', keyName, '18446744073709551614');
+      await rte.client.call('ARINSERT', keyName, 'last');
+
+      await validateApiCall({
+        endpoint,
+        data: { keyName },
+        responseSchema,
+        responseBody: { keyName, index: null },
+      });
+    });
+
+    it('Should round-trip a cursor above MAX_SAFE_INTEGER', async () => {
+      const keyName = constants.getRandomString();
+      // ARSEEK to a u64 cursor that exceeds Number.MAX_SAFE_INTEGER (2^53-1).
+      // If the wire path ever decodes the integer reply as a JS number,
+      // precision is silently lost — this assertion catches that regression.
+      const hugeCursor = '9223372036854775818';
+      await rte.client.call('ARSEEK', keyName, hugeCursor);
+
+      await validateApiCall({
+        endpoint,
+        data: { keyName },
+        responseSchema,
+        responseBody: { keyName, index: hugeCursor },
+        checkFn: ({ body }: any) => {
+          expect(typeof body.index).to.eql('string');
+          expect(body.index).to.eql(hugeCursor);
+        },
+      });
+    });
+
     [
       {
         name: 'Should return BadRequest if key holds a non-array type',

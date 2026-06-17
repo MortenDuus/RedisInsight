@@ -118,6 +118,18 @@ describe('POST /databases/:instanceId/array/scan', () => {
         },
         statusCode: 400,
       },
+      {
+        // DTO contract: @IsOptional + @IsInt + @Min(1). limit:0 must fail
+        // validation before it can become a no-op `LIMIT 0` at Redis.
+        name: 'Should reject limit: 0 (below @Min(1))',
+        data: {
+          keyName: constants.getRandomString(),
+          start: '0',
+          end: '5',
+          limit: 0,
+        },
+        statusCode: 400,
+      },
     ].map(mainCheckFn);
   });
 
@@ -162,16 +174,14 @@ describe('POST /databases/:instanceId/array/scan', () => {
       });
     });
 
-    // Skipped: ARSCAN's response `index` is returned by Redis as a RESP
-    // integer, which ioredis decodes to a JS number — values above 2^53
-    // round before they reach the API. Round-tripping the request side at
-    // the upper edge is covered by /get-range and /get-element (neither
-    // echoes the index in the response). Remove .skip once the integer-
-    // reply precision path is fixed (see PR #6064 discussion).
-    it.skip('Should round-trip the index when scanning at the maximum valid index (2^64-2)', async () => {
+    it('Should round-trip the index when scanning at the maximum valid index (2^64-2)', async () => {
       const keyName = constants.getRandomString();
       const maxIndex = '18446744073709551614';
 
+      // Redis 8.8 returns u64 values ≥ 2^63 as RESP bulk strings (not RESP
+      // integers), so ARSCAN's `index` field survives the wire intact for
+      // values in this range. Locks in the contract that the API surfaces
+      // the index as a decimal string even at the upper edge of u64.
       await rte.client.call('ARSET', keyName, maxIndex, 'edge');
 
       await validateApiCall({
@@ -216,6 +226,24 @@ describe('POST /databases/:instanceId/array/scan', () => {
             { index: '0', value: '20.1' },
             { index: '1', value: '20.4' },
           ],
+        },
+      });
+    });
+
+    it('Should accept a span of exactly 1,000,000 elements', async () => {
+      const keyName = constants.getRandomString();
+      await rte.client.call('ARSET', keyName, '0', 'x');
+
+      // Boundary case: span = end - start + 1 = 1_000_000 → just within cap.
+      // Mirror of the get-range boundary test — both endpoints share the
+      // span validator.
+      await validateApiCall({
+        endpoint,
+        data: { keyName, start: '0', end: '999999' },
+        responseSchema,
+        responseBody: {
+          keyName,
+          elements: [{ index: '0', value: 'x' }],
         },
       });
     });
