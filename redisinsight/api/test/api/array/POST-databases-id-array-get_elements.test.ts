@@ -24,10 +24,10 @@ const endpoint = (instanceId = constants.TEST_INSTANCE_ID) =>
 
 // Per-item indexes are validated by @IsArrayIndex({ each: true }), which emits
 // a single combined message ("<field> must be an integer string between 0
-// and <2^64-1>") for any non-canonical item — and drops the array index marker
-// (so an `indexes[0]` failure still surfaces as `indexes must be …`). Override
-// the per-rule Joi messages with a label-less substring of the API output so
-// the harness's substring-contains check passes.
+// and 18446744073709551614") for any non-canonical item — and drops the array
+// index marker (so an `indexes[0]` failure still surfaces as `indexes must be
+// …`). Override the per-rule Joi messages with a label-less substring of the
+// API output so the harness's substring-contains check passes.
 const ARRAY_INDEX_MSG = 'must be an integer string between';
 
 const dataSchema = Joi.object({
@@ -86,6 +86,16 @@ describe('POST /databases/:instanceId/array/get-elements', () => {
         data: {
           keyName: constants.getRandomString(),
           indexes: ['0', '18446744073709551616'],
+        },
+        statusCode: 400,
+      },
+      {
+        // 2^64-1 is reserved by Redis as the "no-index" sentinel; a single
+        // bad item must invalidate the whole request (per-item @IsArrayIndex).
+        name: 'Should reject when any index equals the reserved 2^64-1 sentinel',
+        data: {
+          keyName: constants.getRandomString(),
+          indexes: ['0', '18446744073709551615', '5'],
         },
         statusCode: 400,
       },

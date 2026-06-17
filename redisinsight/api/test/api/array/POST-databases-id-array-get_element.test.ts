@@ -23,10 +23,11 @@ const endpoint = (instanceId = constants.TEST_INSTANCE_ID) =>
   );
 
 // `index` is validated by @IsArrayIndex on the API side, which emits a single
-// combined message ("<field> must be an integer string between 0 and <2^64-1>")
-// for any non-canonical input. Override the per-rule Joi messages with a
-// label-less substring of the API output so the harness's substring-contains
-// check passes for undefined / null / number / boolean / object / array cases.
+// combined message ("<field> must be an integer string between 0 and
+// 18446744073709551614") for any non-canonical input. Override the per-rule
+// Joi messages with a label-less substring of the API output so the harness's
+// substring-contains check passes for undefined / null / number / boolean /
+// object / array cases.
 const ARRAY_INDEX_MSG = 'must be an integer string between';
 
 const dataSchema = Joi.object({
@@ -87,6 +88,17 @@ describe('POST /databases/:instanceId/array/get-element', () => {
         },
         statusCode: 400,
       },
+      {
+        // 2^64-1 (18446744073709551615) is technically within u64 but Redis
+        // reserves it as the "no-index" sentinel (ARSET / ARMSET reject it
+        // server-side). Match that boundary at the API validator.
+        name: 'Should reject the reserved 2^64-1 sentinel index',
+        data: {
+          keyName: constants.getRandomString(),
+          index: '18446744073709551615',
+        },
+        statusCode: 400,
+      },
     ].map(mainCheckFn);
   });
 
@@ -128,6 +140,22 @@ describe('POST /databases/:instanceId/array/get-element', () => {
         data: { keyName, index: '999' },
         responseSchema,
         responseBody: { keyName, value: null },
+      });
+    });
+
+    it('Should round-trip a value stored at the maximum valid index (2^64-2)', async () => {
+      const keyName = constants.getRandomString();
+      const maxIndex = '18446744073709551614';
+
+      // ARSET at the boundary the API validator permits, then read it back.
+      // Guards both the validator accepting 2^64-2 and the bulk-reply path.
+      await rte.client.call('ARSET', keyName, maxIndex, 'edge');
+
+      await validateApiCall({
+        endpoint,
+        data: { keyName, index: maxIndex },
+        responseSchema,
+        responseBody: { keyName, value: 'edge' },
       });
     });
 

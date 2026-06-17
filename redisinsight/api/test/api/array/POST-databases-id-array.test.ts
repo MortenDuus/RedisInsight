@@ -182,6 +182,17 @@ describe('POST /databases/:id/array', () => {
         statusCode: 400,
       },
       {
+        // 2^64-1 is reserved by Redis as the "no-index" sentinel — ARSET /
+        // ARMSET reject it server-side, so the API validator must too.
+        name: 'Should reject the reserved 2^64-1 sentinel index',
+        data: {
+          keyName: constants.getRandomString(),
+          mode: ArrayCreationMode.Sparse,
+          elements: [{ index: '18446744073709551615', value: 'x' }],
+        },
+        statusCode: 400,
+      },
+      {
         name: 'Should reject contiguous mode with empty values',
         data: {
           keyName: constants.getRandomString(),

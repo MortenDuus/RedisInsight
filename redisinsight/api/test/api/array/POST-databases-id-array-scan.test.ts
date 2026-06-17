@@ -22,9 +22,9 @@ const endpoint = (instanceId = constants.TEST_INSTANCE_ID) =>
 
 // `start` and `end` are validated by @IsArrayIndex on the API side, which
 // emits a single combined message ("<field> must be an integer string between
-// 0 and <2^64-1>") for any non-canonical input. Override the per-rule Joi
-// messages with a label-less substring of the API output so the harness's
-// substring-contains check passes.
+// 0 and 18446744073709551614") for any non-canonical input. Override the
+// per-rule Joi messages with a label-less substring of the API output so the
+// harness's substring-contains check passes.
 const ARRAY_INDEX_MSG = 'must be an integer string between';
 
 const dataSchema = Joi.object({
@@ -82,15 +82,6 @@ describe('POST /databases/:instanceId/array/scan', () => {
 
     [
       {
-        name: 'Should reject a reversed range (start > end)',
-        data: { keyName: constants.getRandomString(), start: '5', end: '0' },
-        statusCode: 400,
-        responseBody: {
-          statusCode: 400,
-          message: 'Start index must be less than or equal to end index.',
-        },
-      },
-      {
         name: 'Should reject a range exceeding 1,000,000 elements even without a limit',
         // Without LIMIT, Redis still walks the index range — same cap applies.
         data: {
@@ -102,6 +93,30 @@ describe('POST /databases/:instanceId/array/scan', () => {
         checkFn: ({ body }: any) => {
           expect(body.message).to.have.string('1 000 000');
         },
+      },
+      {
+        name: 'Should reject a reversed range exceeding the 1,000,000 cap',
+        // |end - start| + 1 = 1_000_001 → cap is direction-agnostic.
+        data: {
+          keyName: constants.getRandomString(),
+          start: '1000000',
+          end: '0',
+        },
+        statusCode: 400,
+        checkFn: ({ body }: any) => {
+          expect(body.message).to.have.string('1 000 000');
+        },
+      },
+      {
+        // 2^64-1 is reserved by Redis as the "no-index" sentinel; the API
+        // validator rejects it before the request reaches Redis.
+        name: 'Should reject when end equals the reserved 2^64-1 sentinel',
+        data: {
+          keyName: constants.getRandomString(),
+          start: '0',
+          end: '18446744073709551615',
+        },
+        statusCode: 400,
       },
     ].map(mainCheckFn);
   });
@@ -124,6 +139,48 @@ describe('POST /databases/:instanceId/array/scan', () => {
             { index: '1', value: '20.4' },
             { index: '5', value: '21.4' },
           ],
+        },
+      });
+    });
+
+    it('Should return pairs in reverse index order when start > end', async () => {
+      const keyName = constants.getRandomString();
+      await seedSparse(keyName);
+
+      await validateApiCall({
+        endpoint,
+        data: { keyName, start: '6', end: '0' },
+        responseSchema,
+        responseBody: {
+          keyName,
+          elements: [
+            { index: '5', value: '21.4' },
+            { index: '1', value: '20.4' },
+            { index: '0', value: '20.1' },
+          ],
+        },
+      });
+    });
+
+    // Skipped: ARSCAN's response `index` is returned by Redis as a RESP
+    // integer, which ioredis decodes to a JS number — values above 2^53
+    // round before they reach the API. Round-tripping the request side at
+    // the upper edge is covered by /get-range and /get-element (neither
+    // echoes the index in the response). Remove .skip once the integer-
+    // reply precision path is fixed (see PR #6064 discussion).
+    it.skip('Should round-trip the index when scanning at the maximum valid index (2^64-2)', async () => {
+      const keyName = constants.getRandomString();
+      const maxIndex = '18446744073709551614';
+
+      await rte.client.call('ARSET', keyName, maxIndex, 'edge');
+
+      await validateApiCall({
+        endpoint,
+        data: { keyName, start: maxIndex, end: maxIndex },
+        responseSchema,
+        responseBody: {
+          keyName,
+          elements: [{ index: maxIndex, value: 'edge' }],
         },
       });
     });
