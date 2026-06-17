@@ -14,7 +14,7 @@ export const AZURE_AUTHORITY = 'https://login.microsoftonline.com/common';
 /**
  * Azure App Registration Client ID.
  */
-export const AZURE_CLIENT_ID = '61f3d82d-2bf3-432a-ba1b-c056e4cf0fd0';
+export const AZURE_CLIENT_ID = process.env['RI_AZURE_CLIENT_ID'] ?? '61f3d82d-2bf3-432a-ba1b-c056e4cf0fd0';
 
 /**
  * Azure Redis scope for Entra ID authentication.
