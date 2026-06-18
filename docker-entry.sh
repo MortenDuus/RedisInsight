@@ -17,12 +17,11 @@ if [ -n "$AZURE_FEDERATED_TOKEN_FILE" ] && [ -n "$AZURE_CLIENT_ID" ] && [ -n "$A
 const fs = require('fs');
 const federatedToken = fs.readFileSync(process.env.AZURE_FEDERATED_TOKEN_FILE, 'utf8').trim();
 const params = new URLSearchParams({
-  grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+  grant_type: 'client_credentials',
   client_id: process.env.AZURE_CLIENT_ID,
   client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
   client_assertion: federatedToken,
   scope: 'https://redis.azure.com/.default',
-  requested_token_use: 'on_behalf_of',
 });
 fetch('https://login.microsoftonline.com/' + process.env.AZURE_TENANT_ID + '/oauth2/v2.0/token', {
   method: 'POST',
