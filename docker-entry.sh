@@ -39,5 +39,20 @@ fetch('https://login.microsoftonline.com/' + process.env.AZURE_TENANT_ID + '/oau
   echo "Redis Entra token acquired (valid ~1h)"
 fi
 
+# When a Workload Identity token was injected, the Entra token is only refreshed
+# at startup (the pre-setup DB is re-seeded each boot). Self-terminate after 45m
+# so the kubelet restarts the container with a fresh token before the ~1h expiry.
+if [ -n "$RI_REDIS_PASSWORD1" ]; then
+  echo "Token refresh timer armed — container will restart in 45m"
+  "$@" &
+  app_pid=$!
+  # Forward real shutdown signals (rollout, drain) to the app for graceful exit.
+  trap 'kill -TERM "$app_pid" 2>/dev/null' TERM INT
+  # Token refresh timer: terminate the app after 45m so the kubelet restarts us.
+  ( sleep 2700; kill -TERM "$app_pid" 2>/dev/null ) &
+  wait "$app_pid" || true
+  exit 0
+fi
+
 # Run the application's entry script with the exec command so it catches SIGTERM properly
 exec "$@"
